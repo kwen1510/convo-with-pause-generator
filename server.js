@@ -35,10 +35,14 @@ const HTML = (voices, msg = '') => `<!doctype html>
  <form method="post" action="/generate">
    <div class="row">
      <label>Speaker 1 voice
-       <select name="voice1">${voices.map(v => `<option value="\${v.id}">\${escapeHtml(v.name)}</option>`).join('')}</select>
+       <select name="voice1">
+         ${voices.map(v => `<option value="${v.id}">${escapeHtml(v.name)}</option>`).join('')}
+       </select>
      </label>
      <label>Speaker 2 voice
-       <select name="voice2">${voices.map(v => `<option value="\${v.id}">\${escapeHtml(v.name)}</option>`).join('')}</select>
+       <select name="voice2">
+         ${voices.map(v => `<option value="${v.id}">${escapeHtml(v.name)}</option>`).join('')}
+       </select>
      </label>
      <label>Default pause (s)
        <input type="number" name="pauseDefault" step=".1" min="0" value="1.2"/>
@@ -82,34 +86,47 @@ const HTML = (voices, msg = '') => `<!doctype html>
 </section></body></html>`;
 
 // ============ Utils ============
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+  })[c]);
+}
 
 async function listVoices(){
-  const r = await axios.get(`${API_ROOT}/voices`,{headers:{'xi-api-key':XI_KEY},timeout:15000});
-  const voices = (r.data?.voices||[]).map(v=>({id:v.voice_id,name:v.name}));
-  voices.sort((a,b)=>a.name.localeCompare(b.name));
+  const r = await axios.get(`${API_ROOT}/voices`, {
+    headers:{ 'xi-api-key': XI_KEY },
+    timeout: 15000
+  });
+  const voices = (r.data?.voices || []).map(v => ({ id: v.voice_id, name: v.name }));
+  voices.sort((a,b) => a.name.localeCompare(b.name));
   return voices;
 }
 
-// Parse script into events: {type:'speak'|'pause', voice:'v1'|'v2', text?:string, sec?:number}
+// Parse script into events: {type:'speak'|'pause', voice:'v1'|'v2', text?, sec?}
 function parseScript(text, defaultPause){
-  const events=[];
-  const lines = text.split(/\r?\n/);
-  for(const raw of lines){
+  const events = [];
+  for(const raw of text.split(/\r?\n/)){
     const line = raw.trim();
     if(!line) continue;
-    if(/^\[pause(\s*:\s*([0-9]*\.?[0-9]+))?\]$/i.test(line)){
-      const m = line.match(/^\[pause(\s*:\s*([0-9]*\.?[0-9]+))?\]$/i);
-      const sec = m && m[2]? parseFloat(m[2]): defaultPause;
-      events.push({type:'pause', sec: Math.max(0, sec||0)});
-    } else if(line.startsWith('[Speaker 1]:')){
-      events.push({type:'speak', voice:'v1', text: line.split(']:',2)[1].trim()});
-    } else if(line.startsWith('[Speaker 2]:')){
-      events.push({type:'speak', voice:'v2', text: line.split(']:',2)[1].trim()});
-    } else if(/^Title\s*:/i.test(line)){
-      // ignore title line
+
+    // [pause] or [pause:1.7]
+    const pauseRe = /^\[pause(\s*:\s*([0-9]*\.?[0-9]+))?\]$/i;
+    if (pauseRe.test(line)) {
+      const m = line.match(pauseRe);
+      const sec = m && m[2] ? parseFloat(m[2]) : defaultPause;
+      events.push({ type:'pause', sec: Math.max(0, sec || 0) });
       continue;
     }
+
+    if (line.startsWith('[Speaker 1]:')) {
+      events.push({ type:'speak', voice:'v1', text: line.split(']:',2)[1].trim() });
+      continue;
+    }
+    if (line.startsWith('[Speaker 2]:')) {
+      events.push({ type:'speak', voice:'v2', text: line.split(']:',2)[1].trim() });
+      continue;
+    }
+    if (/^Title\s*:/i.test(line)) continue; // ignore "Title: ..."
   }
   return events;
 }
@@ -126,14 +143,15 @@ function wrapWav(pcm){
   const blockAlign = numChannels * bitDepth / 8;
   const byteRate   = sampleRate * blockAlign;
   const dataSize   = pcm.length;
+
   const header = Buffer.alloc(44);
   let o = 0;
   header.write('RIFF', o); o+=4;
   header.writeUInt32LE(36 + dataSize, o); o+=4;
   header.write('WAVE', o); o+=4;
   header.write('fmt ', o); o+=4;
-  header.writeUInt32LE(16, o); o+=4;
-  header.writeUInt16LE(1, o); o+=2;
+  header.writeUInt32LE(16, o); o+=4;       // PCM fmt chunk size
+  header.writeUInt16LE(1, o); o+=2;        // PCM
   header.writeUInt16LE(numChannels, o); o+=2;
   header.writeUInt32LE(sampleRate, o); o+=4;
   header.writeUInt32LE(byteRate, o); o+=4;
@@ -141,43 +159,35 @@ function wrapWav(pcm){
   header.writeUInt16LE(bitDepth, o); o+=2;
   header.write('data', o); o+=4;
   header.writeUInt32LE(dataSize, o); o+=4;
+
   return Buffer.concat([header, pcm]);
 }
 
-// TTS helpers
+// TTS: PCM for WAV path (gap-accurate)
 async function ttsPCM(voiceId, text){
-  const url = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
+  const url    = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
   const params = { output_format: 'pcm_22050', model_id: 'eleven_multilingual_v2' };
+
   const r = await axios.post(url, { text }, {
     params,
-    headers: {'xi-api-key':XI_KEY,'Content-Type':'application/json'},
-    responseType:'arraybuffer', timeout:60000
+    headers: { 'xi-api-key': XI_KEY, 'Content-Type': 'application/json' },
+    responseType: 'arraybuffer',
+    timeout: 60000
   });
-  // Defensive: ensure not MP3
-  const ct = String(r.headers['content-type']||'').toLowerCase();
-  if(ct.includes('audio/mpeg')) throw new Error('Got MP3 from API; expected PCM. Check output_format.');
+
+  const ct = String(r.headers['content-type'] || '').toLowerCase();
+  if (ct.includes('audio/mpeg')) {
+    throw new Error('Got MP3 from API; expected PCM. Check output_format.');
+  }
   return Buffer.from(r.data);
 }
 
-// Optional MP3 path: use Text-to-Dialogue to produce a single MP3 (no gap-accurate pauses)
-async function dialogueMP3(inputs, {output='mp3_44100_128'} = {}){
-  // inputs: [{text, voice_id}, ...]
-  const url = `${API_ROOT}/text-to-dialogue`;
-  const r = await axios.post(url, { inputs }, {
-    params: { output_format: output },
-    headers: {'xi-api-key':XI_KEY,'Content-Type':'application/json'},
-    responseType:'arraybuffer', timeout:120000
-  });
-  return Buffer.from(r.data);
-}
-
-// Minimal MP3 concatenation helper: remove ID3v2 (if present) from all but first; drop ID3v1 from all but last
+// Optional MP3 helpers (best-effort; may not be gapless)
 function stripID3v2(buf){
   if (buf.length < 10) return buf;
   if (buf[0]===0x49 && buf[1]===0x44 && buf[2]===0x33){ // 'ID3'
     const size = ((buf[6]&0x7f)<<21) | ((buf[7]&0x7f)<<14) | ((buf[8]&0x7f)<<7) | (buf[9]&0x7f);
-    const total = 10 + size;
-    return buf.slice(total);
+    return buf.slice(10 + size);
   }
   return buf;
 }
@@ -192,24 +202,24 @@ function stripID3v1(buf){
 }
 function concatMP3(buffers){
   const parts = [];
-  buffers.forEach((b,i)=>{
+  buffers.forEach((b,i) => {
     let x = b;
-    if(i>0) x = stripID3v2(x);
-    if(i < buffers.length-1) x = stripID3v1(x);
+    if (i > 0) x = stripID3v2(x);
+    if (i < buffers.length-1) x = stripID3v1(x);
     parts.push(x);
   });
   return Buffer.concat(parts);
 }
-
-async function ttsMP3(voiceId, text, {format='mp3_22050_64'} = {}){
-  const url = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
+async function ttsMP3(voiceId, text, { format='mp3_22050_64' } = {}){
+  const url    = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
   const params = { output_format: format, model_id: 'eleven_multilingual_v2' };
   const r = await axios.post(url, { text }, {
     params,
-    headers: {'xi-api-key':XI_KEY,'Content-Type':'application/json'},
-    responseType:'arraybuffer', timeout:60000
+    headers: { 'xi-api-key': XI_KEY, 'Content-Type': 'application/json' },
+    responseType: 'arraybuffer',
+    timeout: 60000
   });
-  return Buffer.from(r.data); // MP3 bytes
+  return Buffer.from(r.data);
 }
 
 // ============ Routes ============
@@ -218,75 +228,64 @@ app.get('/', async (req,res)=>{
     const voices = await listVoices();
     res.send(HTML(voices));
   }catch(e){
-    res.status(500).send(HTML([], 'Failed to load voices: '+escapeHtml(e.message)));
+    res.status(500).send(HTML([], 'Failed to load voices: ' + escapeHtml(e.message)));
   }
 });
 
 app.post('/generate', async (req,res)=>{
   const { script='', voice1, voice2, pauseDefault='1.2', format='wav', filename='conversation' } = req.body;
-  const defaultPause = Math.max(0, parseFloat(pauseDefault)||0);
+  const defaultPause = Math.max(0, parseFloat(pauseDefault) || 0);
+
   if(!voice1 || !voice2){
     const voices = await listVoices().catch(()=>[]);
-    return res.status(400).send(HTML(voices,'Please choose both voices.'));
+    return res.status(400).send(HTML(voices, 'Please choose both voices.'));
   }
+
   try{
     const events = parseScript(script, defaultPause);
 
-    if(format === 'wav'){
-      // Gap-accurate path: build PCM then WAV
+    if (format === 'wav') {
+      // Gap-accurate path (PCM → WAV)
       const pcmParts = [];
-      for(const ev of events){
-        if(ev.type==='pause'){
+      for (const ev of events){
+        if (ev.type === 'pause') {
           pcmParts.push(silencePCM(ev.sec));
-        }else if(ev.type==='speak'){
-          const voiceId = ev.voice==='v1'? voice1 : voice2;
-          const pcm = await ttsPCM(voiceId, ev.text);
-          pcmParts.push(pcm);
+        } else {
+          const voiceId = ev.voice === 'v1' ? voice1 : voice2;
+          pcmParts.push(await ttsPCM(voiceId, ev.text));
         }
       }
       const merged = Buffer.concat(pcmParts);
-      const wav = wrapWav(merged);
-      const name = (filename||'conversation').replace(/[^a-zA-Z0-9_\-]/g,'_') + '.wav';
+      const wav    = wrapWav(merged);
+      const name   = (filename || 'conversation').replace(/[^a-zA-Z0-9_\-]/g,'_') + '.wav';
       res.setHeader('Content-Type','audio/wav');
       res.setHeader('Content-Disposition',`attachment; filename="${name}"`);
       return res.send(wav);
     }
 
-    // MP3 options:
-    //  A) Use text-to-dialogue to get single MP3 quickly (pauses not exact).
-    //  B) Or stitch per-segment MP3s (basic ID3 header stripping). Timing may vary slightly.
-    // Below implements (B) so your [pause] durations are respected by inserting silent PCM -> MP3 is not trivial without an encoder,
-    // so we fall back to concatenating MP3 segments directly (works in many players, but may not be perfectly gapless).
-
+    // MP3 (best-effort; may have tiny gaps)
     const mp3Parts = [];
-    for(const ev of events){
-      if(ev.type==='pause'){
-        // For MP3 pause: synthesize a 'silence' clip using a dot and long punctuation won't be precise,
-        // so instead request a 1-s silent MP3 workaround doesn't exist. We'll fake silence by using a short " " which is spoken as nothing is unreliable.
-        // More reliable: generate a short MP3 of silence by hitting the TTS with a zero-width char; not guaranteed.
-        // Simpler approach: generate a very short " " clip and hope model yields silence; repeat to approximate length.
-        // For practicality, we generate silence by calling TTS on "." and trusting it to output a quiet blip; multiply to duration.
-        const approx = Math.max(0.2, ev.sec); // seconds
-        const dots = '.'.repeat(Math.ceil(approx/0.5)); // crude
-        const m = await ttsMP3(voice1, dots); // use voice1 for silence filler
-        mp3Parts.push(m);
-      }else{
-        const voiceId = ev.voice==='v1'? voice1 : voice2;
+    for (const ev of events){
+      if (ev.type === 'pause') {
+        // Crude silence approximation via short “.” clip(s)
+        const dots = '.'.repeat(Math.max(1, Math.ceil(ev.sec / 0.5)));
+        mp3Parts.push(await ttsMP3(voice1, dots));
+      } else {
+        const voiceId = ev.voice === 'v1' ? voice1 : voice2;
         mp3Parts.push(await ttsMP3(voiceId, ev.text));
       }
     }
     const mergedMP3 = concatMP3(mp3Parts);
-    const name = (filename||'conversation').replace(/[^a-zA-Z0-9_\-]/g,'_') + '.mp3';
+    const name = (filename || 'conversation').replace(/[^a-zA-Z0-9_\-]/g,'_') + '.mp3';
     res.setHeader('Content-Type','audio/mpeg');
     res.setHeader('Content-Disposition',`attachment; filename="${name}"`);
     return res.send(mergedMP3);
 
   }catch(e){
     const voices = await listVoices().catch(()=>[]);
-    return res.status(500).send(HTML(voices,'Synthesis failed: '+escapeHtml(e.message)));
+    return res.status(500).send(HTML(voices, 'Synthesis failed: ' + escapeHtml(e.message)));
   }
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Listening on http://localhost:${PORT}`));
-
+app.listen(PORT, () => console.log('Listening on 0.0.0.0:' + PORT));
