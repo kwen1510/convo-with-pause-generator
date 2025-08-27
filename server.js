@@ -13,7 +13,7 @@ const BITDEPTH = 16;
 
 if (!XI_KEY) throw new Error('Set ELEVENLABS_API_KEY in .env');
 
-// ---------- HTML (Dark UI) ----------
+// ---------- HTML (Dark UI + Spinner) ----------
 const HTML = ({ voices, msg = '', form = {} }) => {
   const {
     title = 'Atomic Structure',
@@ -22,7 +22,6 @@ const HTML = ({ voices, msg = '', form = {} }) => {
     pauseDefault = '1.2',
     script = DEFAULT_SCRIPT
   } = form;
-
   const selected = (a, b) => (a === b ? 'selected' : '');
 
   return `<!doctype html>
@@ -37,47 +36,46 @@ const HTML = ({ voices, msg = '', form = {} }) => {
       --input:#0f1115; --input-border:#334155;
     }
     *{box-sizing:border-box}
-    body{
-      margin:0; background:var(--bg); color:var(--text);
-      font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
-      display:flex; justify-content:center; align-items:flex-start; min-height:100vh; padding:40px 16px;
-    }
-    .card{
-      width:min(980px,100%); background:var(--card); border:1px solid var(--border);
-      border-radius:18px; padding:28px; box-shadow:0 10px 30px rgba(0,0,0,.35);
-    }
-    h1{margin:0 0 18px; font-size:22px; text-align:center; letter-spacing:.2px}
+    body{margin:0; background:var(--bg); color:var(--text); font:16px/1.5 system-ui, sans-serif;
+         display:flex; justify-content:center; min-height:100vh; padding:40px 16px;}
+    .card{width:min(980px,100%); background:var(--card); border:1px solid var(--border);
+          border-radius:18px; padding:28px; box-shadow:0 10px 30px rgba(0,0,0,.35);}
+    h1{margin:0 0 18px; font-size:22px; text-align:center}
     p.hint{color:var(--muted); margin:-4px 0 18px; text-align:center}
     .msg{background:#b91c1c; color:#fff; padding:10px 12px; border-radius:10px; margin:0 0 12px; font-weight:600}
     form{display:flex; flex-direction:column; gap:18px}
     .grid-3{display:grid; grid-template-columns:repeat(3,1fr); gap:14px}
-    .grid-2{display:grid; grid-template-columns:repeat(2,1fr); gap:14px}
+    .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:14px}
     label{display:flex; flex-direction:column; gap:8px; font-weight:600}
     input, select, textarea{
       background:var(--input); color:var(--text); border:1px solid var(--input-border);
-      border-radius:10px; padding:11px 12px; font-size:15px; outline:none;
+      border-radius:10px; padding:11px 12px; font-size:15px;
     }
     textarea{min-height:260px; resize:vertical}
-    .row-note{color:var(--muted); font-size:14px}
     code{background:#0b0d12; border:1px solid var(--border); padding:2px 6px; border-radius:6px; color:#cbd5e1}
-    button{
-      margin-top:8px; padding:14px 16px; font-size:16px; font-weight:700;
-      color:#fff; background:linear-gradient(180deg, var(--accent), var(--accent2));
-      border:none; border-radius:12px; cursor:pointer; letter-spacing:.2px;
-      box-shadow:0 6px 18px rgba(59,130,246,.35);
-    }
+    button{margin-top:8px; padding:14px 16px; font-size:16px; font-weight:700; color:#fff;
+           background:linear-gradient(180deg, var(--accent), var(--accent2)); border:none;
+           border-radius:12px; cursor:pointer; box-shadow:0 6px 18px rgba(59,130,246,.35);}
     button:hover{filter:brightness(1.05)}
     .footer{margin-top:10px; color:var(--muted); font-size:13px; text-align:center}
+
+    /* Spinner overlay */
+    .overlay{position:fixed; inset:0; background:rgba(0,0,0,0.65); display:none;
+             align-items:center; justify-content:center; z-index:9999;}
+    .spinner{border:6px solid #333; border-top:6px solid var(--accent); border-radius:50%;
+             width:60px; height:60px; animation:spin 1s linear infinite;}
+    @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
   </style>
 </head>
 <body>
+  <div class="overlay" id="overlay"><div class="spinner"></div></div>
   <section class="card">
     ${msg ? `<div class="msg">${escapeHtml(msg)}</div>` : ''}
     <h1>Conversation → Audio (Multiple pauses, 2 speakers)</h1>
-    <p class="hint">Black UI • white words • precise WAV or best-effort MP3 • Title becomes filename</p>
-    <form method="post" action="/generate">
+    <p class="hint">Title becomes filename. WAV = safest, MP3 = best-effort. Model: <b>eleven_v3</b></p>
+    <form method="post" action="/generate" onsubmit="showSpinner()">
       <label>Title (used as filename)
-        <input name="title" placeholder="Enter title" value="${escapeHtml(title)}" />
+        <input name="title" value="${escapeHtml(title)}" />
       </label>
 
       <div class="grid-3">
@@ -99,25 +97,26 @@ const HTML = ({ voices, msg = '', form = {} }) => {
       <div class="grid-2">
         <label>Output format
           <select name="format">
-            <option value="wav" ${selected(format,'wav')}>WAV (gapless, safest)</option>
-            <option value="mp3" ${selected(format,'mp3')}>MP3 (best-effort)</option>
+            <option value="wav" ${selected(format,'wav')}>WAV (gapless)</option>
+            <option value="mp3" ${selected(format,'mp3')}>MP3</option>
           </select>
         </label>
-        <label>Filename (optional override, no extension)
+        <label>Filename (optional override)
           <input name="filename" placeholder="Leave blank to use Title" value="${escapeHtml(filename)}" />
         </label>
       </div>
-
-      <div class="row-note">Script syntax: lines start with <code>[Speaker 1]:</code> or <code>[Speaker 2]:</code>. Insert pauses with <code>[pause]</code> or <code>[pause:1.7]</code> (seconds). If your first line is <code>Title: Something</code>, we’ll auto-fill the Title above and ignore that line.</div>
 
       <label>Script
         <textarea name="script" rows="16">${escapeHtml(script)}</textarea>
       </label>
 
       <button type="submit">Generate</button>
-      <div class="footer">Nothing is stored on disk; audio is assembled in memory and downloaded directly.</div>
+      <div class="footer">Audio is generated in memory and downloaded directly.</div>
     </form>
   </section>
+  <script>
+    function showSpinner(){ document.getElementById('overlay').style.display='flex'; }
+  </script>
 </body>
 </html>`;
 };
@@ -128,19 +127,6 @@ const DEFAULT_SCRIPT = `Title: Atomic Structure
 [Speaker 1]: Let’s begin. What are the three main subatomic particles in an atom and their relative charges?
 [pause]
 [Speaker 2]: The proton has a +1 charge, the neutron has no charge, and the electron has a –1 charge.
-[Speaker 1]: Correct — and the protons and neutrons are found in the nucleus
-[pause]
-[Speaker 1]: Moving on, what happens to protons, neutrons, and electrons when they are each passed through an electric field?
-[pause]
-[Speaker 2]: Protons deflect towards the negative plate, neutrons are not deflected, and electrons deflect towards the positive plate.
-[Speaker 1]: Yes — and the angle of deflection depends on the charge to mass ratio.
-[pause]
-[Speaker 1]: Here’s another: What does the principal quantum number, n, tell us?
-[pause]
-[Speaker 2]: It tells us the electron shell number, which relates to the distance from the nucleus and the energy level.
-[Speaker 1]: Correct — higher n means electrons are further from the nucleus and have higher energy.
-[pause]
-[Speaker 1]: Next, what is the shape of an s orbital?
 [pause]`;
 
 // ---------- Utils ----------
@@ -165,7 +151,7 @@ async function listVoices(){
   return voices;
 }
 
-// Extract Title from first "Title:" line if present
+// Extract Title from first "Title:" line if present and strip it from the body
 function extractTitleAndStrip(text){
   const lines = text.split(/\r?\n/);
   let found = '';
@@ -199,7 +185,7 @@ function parseScript(text, defaultPause){
       events.push({ type:'speak', voice:'v2', text: line.split(']:',2)[1].trim() });
       continue;
     }
-    // Any other lines (including Title) are ignored
+    // Ignore any other lines
   }
   return events;
 }
@@ -236,10 +222,10 @@ function wrapWav(pcm){
   return Buffer.concat([header, pcm]);
 }
 
-// ElevenLabs: PCM (for WAV path)
+// ElevenLabs: PCM (for WAV path) — using eleven_v3
 async function ttsPCM(voiceId, text){
   const url    = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
-  const params = { output_format: 'pcm_22050', model_id: 'eleven_multilingual_v2' };
+  const params = { output_format: 'pcm_22050', model_id: 'eleven_v3' };
   const r = await axios.post(url, { text }, {
     params,
     headers: { 'xi-api-key': XI_KEY, 'Content-Type':'application/json' },
@@ -275,9 +261,10 @@ function concatMP3(buffers){
     return x;
   }));
 }
+// ElevenLabs MP3 (using eleven_v3)
 async function ttsMP3(voiceId, text, { format='mp3_22050_64' } = {}){
   const url    = `${API_ROOT}/text-to-speech/${encodeURIComponent(voiceId)}`;
-  const params = { output_format: format, model_id: 'eleven_multilingual_v2' };
+  const params = { output_format: format, model_id: 'eleven_v3' };
   const r = await axios.post(url, { text }, {
     params,
     headers: { 'xi-api-key': XI_KEY, 'Content-Type':'application/json' },
@@ -291,7 +278,6 @@ async function ttsMP3(voiceId, text, { format='mp3_22050_64' } = {}){
 app.get('/', async (req,res)=>{
   try{
     const voices = await listVoices();
-    // Prefill title from default script
     const { title } = extractTitleAndStrip(DEFAULT_SCRIPT);
     res.send(HTML({ voices, form: { title, script: DEFAULT_SCRIPT } }));
   }catch(e){
@@ -308,13 +294,12 @@ app.post('/generate', async (req,res)=>{
     return res.status(400).send(HTML({ voices, msg: 'Please choose both voices.', form: req.body }));
   }
 
-  // If user pasted a "Title: ..." line, pull it up and strip it out
+  // Pull title from script if present; strip Title line from body
   if (!title) {
     const ex = extractTitleAndStrip(script);
     if (ex.title) title = ex.title;
     script = ex.body || script;
   } else {
-    // Even if title is provided, strip any Title line from script so it won't be spoken
     script = extractTitleAndStrip(script).body || script;
   }
 
@@ -339,7 +324,7 @@ app.post('/generate', async (req,res)=>{
       return res.send(wav);
     }
 
-    // MP3 best-effort
+    // MP3 best-effort path
     const mp3Parts = [];
     for (const ev of events){
       if (ev.type === 'pause'){
